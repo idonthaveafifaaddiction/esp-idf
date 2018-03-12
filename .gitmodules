@@ -4,7 +4,7 @@
 
 [submodule "components/esptool_py/esptool"]
 	path = components/esptool_py/esptool
-	url = git@github.com:espressif/simplisafe/esptool.git
+	url = git@github.com:simplisafe/esptool.git
 
 [submodule "components/bt/lib"]
 	path = components/bt/lib
