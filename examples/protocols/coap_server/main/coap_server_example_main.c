@@ -51,8 +51,7 @@ send_async_response(coap_context_t *ctx, const coap_endpoint_t *local_if)
     coap_pdu_t *response;
     unsigned char buf[3];
     const char* response_data     = "Hello World!";
-    size_t size = sizeof(coap_hdr_t) + 20;
-    response = coap_pdu_init(async->flags & COAP_MESSAGE_CON, COAP_RESPONSE_CODE(205), 0, size);
+    response = coap_pdu_init(async->flags & COAP_MESSAGE_CON, COAP_RESPONSE_CODE(205), 0, COAP_MAX_PDU_SIZE);
     response->hdr->id = coap_new_message_id(ctx);
     if (async->tokenlen)
         coap_add_token(response, async->tokenlen, async->token);
@@ -120,7 +119,7 @@ static void coap_example_thread(void *p)
                     FD_CLR( ctx->sockfd, &readfds);
                     FD_SET( ctx->sockfd, &readfds);
 
-                    int result = select( FD_SETSIZE, &readfds, 0, 0, &tv );
+                    int result = select( ctx->sockfd+1, &readfds, 0, 0, &tv );
                     if (result > 0){
                         if (FD_ISSET( ctx->sockfd, &readfds ))
                             coap_read(ctx);

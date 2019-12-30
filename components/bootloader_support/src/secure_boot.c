@@ -36,6 +36,12 @@
 #include "esp_flash_encrypt.h"
 #include "esp_efuse.h"
 
+/* The following API implementations are used only when called
+ * from the bootloader code.
+ */
+
+#ifdef BOOTLOADER_BUILD
+
 static const char* TAG = "secure_boot";
 
 /**
@@ -50,7 +56,7 @@ static bool secure_boot_generate(uint32_t image_len){
     const uint32_t *image;
 
     /* hardware secure boot engine only takes full blocks, so round up the
-       image length. The additional data should all be 0xFF.
+       image length. The additional data should all be 0xFF (or the appended SHA, if it falls in the same block).
     */
     if (image_len % sizeof(digest.iv) != 0) {
         image_len = (image_len / sizeof(digest.iv) + 1) * sizeof(digest.iv);
@@ -67,7 +73,7 @@ static bool secure_boot_generate(uint32_t image_len){
     }
 
     /* generate digest from image contents */
-    image = bootloader_mmap(0x1000, image_len);
+    image = bootloader_mmap(ESP_BOOTLOADER_OFFSET, image_len);
     if (!image) {
         ESP_LOGE(TAG, "bootloader_mmap(0x1000, 0x%x) failed", image_len);
         return false;
@@ -95,28 +101,33 @@ static bool secure_boot_generate(uint32_t image_len){
 /* Burn values written to the efuse write registers */
 static inline void burn_efuses()
 {
-#ifdef CONFIG_SECURE_BOOT_TEST_MODE
-    ESP_LOGE(TAG, "SECURE BOOT TEST MODE. Not really burning any efuses! NOT SECURE");
-#else
     esp_efuse_burn_new_values();
-#endif
 }
 
-esp_err_t esp_secure_boot_permanently_enable(void) {
+esp_err_t esp_secure_boot_generate_digest(void)
+{
     esp_err_t err;
-    uint32_t image_len = 0;
-    if (esp_secure_boot_enabled())
-    {
-        ESP_LOGI(TAG, "bootloader secure boot is already enabled, continuing..");
+    if (esp_secure_boot_enabled()) {
+        ESP_LOGI(TAG, "bootloader secure boot is already enabled."
+                      " No need to generate digest. continuing..");
         return ESP_OK;
     }
 
-    err = esp_image_basic_verify(0x1000, true, &image_len);
+    uint32_t coding_scheme = REG_GET_FIELD(EFUSE_BLK0_RDATA6_REG, EFUSE_CODING_SCHEME);
+    if (coding_scheme != EFUSE_CODING_SCHEME_VAL_NONE && coding_scheme != EFUSE_CODING_SCHEME_VAL_34) {
+        ESP_LOGE(TAG, "Unknown/unsupported CODING_SCHEME value 0x%x", coding_scheme);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    /* Verify the bootloader */
+    esp_image_metadata_t bootloader_data = { 0 };
+    err = esp_image_verify_bootloader_data(&bootloader_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bootloader image appears invalid! error %d", err);
         return err;
     }
 
+    /* Generate secure boot key and keep in EFUSE */
     uint32_t dis_reg = REG_READ(EFUSE_BLK0_RDATA0_REG);
     bool efuse_key_read_protected = dis_reg & EFUSE_RD_DIS_BLK2;
     bool efuse_key_write_protected = dis_reg & EFUSE_WR_DIS_BLK2;
@@ -131,32 +142,47 @@ esp_err_t esp_secure_boot_permanently_enable(void) {
         && REG_READ(EFUSE_BLK2_RDATA6_REG) == 0
         && REG_READ(EFUSE_BLK2_RDATA7_REG) == 0) {
         ESP_LOGI(TAG, "Generating new secure boot key...");
-        uint32_t buf[8];
-        bootloader_fill_random(buf, sizeof(buf));
-        for (int i = 0; i < 8; i++) {
-            ESP_LOGV(TAG, "EFUSE_BLK2_WDATA%d_REG = 0x%08x", i, buf[i]);
-            REG_WRITE(EFUSE_BLK2_WDATA0_REG + 4*i, buf[i]);
-        }
-        bzero(buf, sizeof(buf));
+        esp_efuse_write_random_key(EFUSE_BLK2_WDATA0_REG);
         burn_efuses();
-        ESP_LOGI(TAG, "Read & write protecting new key...");
-        REG_WRITE(EFUSE_BLK0_WDATA0_REG, EFUSE_WR_DIS_BLK2 | EFUSE_RD_DIS_BLK2);
-        burn_efuses();
-        efuse_key_read_protected = true;
-        efuse_key_write_protected = true;
-
     } else {
         ESP_LOGW(TAG, "Using pre-loaded secure boot key in EFUSE block 2");
     }
 
+    /* Generate secure boot digest using programmed key in EFUSE */
     ESP_LOGI(TAG, "Generating secure boot digest...");
+    uint32_t image_len = bootloader_data.image_len;
+    if(bootloader_data.image.hash_appended) {
+        /* Secure boot digest doesn't cover the hash */
+        image_len -= ESP_IMAGE_HASH_LEN;
+    }
     if (false == secure_boot_generate(image_len)){
         ESP_LOGE(TAG, "secure boot generation failed");
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Digest generation complete.");
 
-#ifndef CONFIG_SECURE_BOOT_TEST_MODE
+    return ESP_OK;
+}
+
+esp_err_t esp_secure_boot_permanently_enable(void)
+{
+    if (esp_secure_boot_enabled()) {
+        ESP_LOGI(TAG, "bootloader secure boot is already enabled, continuing..");
+        return ESP_OK;
+    }
+
+    uint32_t dis_reg = REG_READ(EFUSE_BLK0_RDATA0_REG);
+    bool efuse_key_read_protected = dis_reg & EFUSE_RD_DIS_BLK2;
+    bool efuse_key_write_protected = dis_reg & EFUSE_WR_DIS_BLK2;
+    if (efuse_key_read_protected == false
+        && efuse_key_write_protected == false) {
+        ESP_LOGI(TAG, "Read & write protecting new key...");
+        REG_WRITE(EFUSE_BLK0_WDATA0_REG, EFUSE_WR_DIS_BLK2 | EFUSE_RD_DIS_BLK2);
+        burn_efuses();
+        efuse_key_read_protected = true;
+        efuse_key_write_protected = true;
+    }
+
     if (!efuse_key_read_protected) {
         ESP_LOGE(TAG, "Pre-loaded key is not read protected. Refusing to blow secure boot efuse.");
         return ESP_ERR_INVALID_STATE;
@@ -165,7 +191,6 @@ esp_err_t esp_secure_boot_permanently_enable(void) {
         ESP_LOGE(TAG, "Pre-loaded key is not write protected. Refusing to blow secure boot efuse.");
         return ESP_ERR_INVALID_STATE;
     }
-#endif
 
     ESP_LOGI(TAG, "blowing secure boot efuse...");
     ESP_LOGD(TAG, "before updating, EFUSE_BLK0_RDATA6 %x", REG_READ(EFUSE_BLK0_RDATA6_REG));
@@ -194,11 +219,9 @@ esp_err_t esp_secure_boot_permanently_enable(void) {
         ESP_LOGI(TAG, "secure boot is now enabled for bootloader image");
         return ESP_OK;
     } else {
-#ifdef CONFIG_SECURE_BOOT_TEST_MODE
-        ESP_LOGE(TAG, "secure boot not enabled due to test mode");
-#else
         ESP_LOGE(TAG, "secure boot not enabled for bootloader image, EFUSE_RD_ABS_DONE_0 is probably write protected!");
-#endif
         return ESP_ERR_INVALID_STATE;
     }
 }
+
+#endif // #ifdef BOOTLOADER_BUILD

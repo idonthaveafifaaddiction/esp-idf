@@ -25,20 +25,20 @@
 // #include <assert.h>
 #include <string.h>
 
-#include "bt_target.h"
-// #include "osi/include/log.h"
-#include "bt_trace.h"
+#include "common/bt_target.h"
+#include "common/bt_trace.h"
+#include "osi/allocator.h"
 
 #if defined(BTA_AV_INCLUDED) && (BTA_AV_INCLUDED == TRUE)
 #include "bta_av_int.h"
-#include "utl.h"
-#include "l2c_api.h"
-#include "l2cdefs.h"
-#include "bta_av_co.h"
+#include "bta/utl.h"
+#include "stack/l2c_api.h"
+#include "stack/l2cdefs.h"
+#include "bta/bta_av_co.h"
 #if( defined BTA_AR_INCLUDED ) && (BTA_AR_INCLUDED == TRUE)
-#include "bta_ar_api.h"
+#include "bta/bta_ar_api.h"
 #endif
-#include "osi.h"
+#include "osi/osi.h"
 
 /*****************************************************************************
 ** Constants and types
@@ -194,6 +194,8 @@ const tBTA_AV_NSM_ACT bta_av_nsm_act[] = {
 /* AV control block */
 #if BTA_DYNAMIC_MEMORY == FALSE
 tBTA_AV_CB  bta_av_cb;
+#else
+tBTA_AV_CB  *bta_av_cb_ptr;
 #endif
 
 #if (defined(BTA_AV_DEBUG) && BTA_AV_DEBUG == TRUE)
@@ -224,7 +226,7 @@ static void bta_av_timer_cback(void *p_tle)
         }
     }
 
-    if (p_scb && (p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL) {
+    if (p_scb && (p_buf = (BT_HDR *) osi_malloc(sizeof(BT_HDR))) != NULL) {
         /* send the event through the audio state machine.
          * only when the audio SM is open, the main SM opens the RC connection as INT */
         p_buf->event = p->event;
@@ -356,7 +358,7 @@ static tBTA_AV_SCB *bta_av_alloc_scb(tBTA_AV_CHNL chnl)
         for (xx = 0; xx < BTA_AV_NUM_STRS; xx++) {
             if (bta_av_cb.p_scb[xx] == NULL) {
                 /* found an empty spot */
-                p_ret = (tBTA_AV_SCB *)GKI_getbuf(sizeof(tBTA_AV_SCB));
+                p_ret = (tBTA_AV_SCB *)osi_malloc(sizeof(tBTA_AV_SCB));
                 if (p_ret) {
                     memset(p_ret, 0, sizeof(tBTA_AV_SCB));
                     p_ret->rc_handle = BTA_AV_RC_HANDLE_NONE;
@@ -389,7 +391,7 @@ UNUSED_ATTR static void bta_av_free_scb(tBTA_AV_SCB *p_scb)
     assert(p_scb != NULL);
 
     list_free(p_scb->a2d_list);
-    GKI_freebuf(p_scb);
+    osi_free(p_scb);
 }
 
 /*******************************************************************************
@@ -423,7 +425,7 @@ void bta_av_conn_cback(UINT8 handle, BD_ADDR bd_addr, UINT8 event, tAVDT_CTRL *p
             //(AVDT_CONNECT_IND_EVT == event && AVDT_ACP == p_data->hdr.err_param))
 
             (AVDT_CONNECT_IND_EVT == event))&& */
-            (p_msg = (tBTA_AV_STR_MSG *) GKI_getbuf((UINT16) (sizeof(tBTA_AV_STR_MSG)))) != NULL) {
+            (p_msg = (tBTA_AV_STR_MSG *) osi_malloc((UINT16) (sizeof(tBTA_AV_STR_MSG)))) != NULL) {
             p_msg->hdr.event = evt;
             p_msg->hdr.layer_specific = event;
             p_msg->hdr.offset = p_data->hdr.err_param;
@@ -575,19 +577,25 @@ static void bta_av_api_register(tBTA_AV_DATA *p_data)
 #endif
             }
 
-            /* Set the Capturing service class bit */
+            /* Set the Calss of Device (Audio & Capturing/Rendering service class bit) */
+            if (p_data->api_reg.tsep == AVDT_TSEP_SRC) {
+                cod.service = BTM_COD_SERVICE_CAPTURING | BTM_COD_SERVICE_AUDIO;
+                cod.major = BTM_COD_MAJOR_AUDIO;
+                cod.minor = BTM_COD_MINOR_UNCLASSIFIED;
+            } else {
 #if (BTA_AV_SINK_INCLUDED == TRUE)
-            cod.service = BTM_COD_SERVICE_CAPTURING | BTM_COD_SERVICE_RENDERING;
-#else
-            cod.service = BTM_COD_SERVICE_CAPTURING;
+                cod.service = BTM_COD_SERVICE_RENDERING | BTM_COD_SERVICE_AUDIO;
+                cod.major = BTM_COD_MAJOR_AUDIO;
+                cod.minor = BTM_COD_MINOR_LOUDSPEAKER;
 #endif
-            utl_set_device_class(&cod, BTA_UTL_SET_COD_SERVICE_CLASS);
+            }
+            utl_set_device_class(&cod, BTA_UTL_SET_COD_ALL);
         } /* if 1st channel */
 
         /* get stream configuration and create stream */
         /* memset(&cs.cfg,0,sizeof(tAVDT_CFG)); */
         cs.cfg.num_codec = 1;
-        cs.tsep = AVDT_TSEP_SRC;
+        cs.tsep = p_data->api_reg.tsep;
 
         /*
          * memset of cs takes care setting call back pointers to null.
@@ -635,11 +643,10 @@ static void bta_av_api_register(tBTA_AV_DATA *p_data)
             memcpy(&p_scb->cfg, &cs.cfg, sizeof(tAVDT_CFG));
             while (index < BTA_AV_MAX_SEPS &&
                     (p_scb->p_cos->init)(&codec_type, cs.cfg.codec_info,
-                                         &cs.cfg.num_protect, cs.cfg.protect_info, index) == TRUE) {
+                                         &cs.cfg.num_protect, cs.cfg.protect_info, p_data->api_reg.tsep) == TRUE) {
 
 #if (BTA_AV_SINK_INCLUDED == TRUE)
-                if (index == 1) {
-                    cs.tsep = AVDT_TSEP_SNK;
+                if (p_data->api_reg.tsep == AVDT_TSEP_SNK) {
                     cs.p_data_cback = bta_av_stream_data_cback;
                 }
                 APPL_TRACE_DEBUG(" SEP Type = %d\n", cs.tsep);
@@ -665,18 +672,20 @@ static void bta_av_api_register(tBTA_AV_DATA *p_data)
             }
 
             if (!bta_av_cb.reg_audio) {
-                /* create the SDP records on the 1st audio channel */
-                bta_av_cb.sdp_a2d_handle = SDP_CreateRecord();
-                A2D_AddRecord(UUID_SERVCLASS_AUDIO_SOURCE, p_service_name, NULL,
-                              A2D_SUPF_PLAYER, bta_av_cb.sdp_a2d_handle);
-                bta_sys_add_uuid(UUID_SERVCLASS_AUDIO_SOURCE);
-
+                if (p_data->api_reg.tsep == AVDT_TSEP_SRC) {
+                    /* create the SDP records on the 1st audio channel */
+                    bta_av_cb.sdp_a2d_handle = SDP_CreateRecord();
+                    A2D_AddRecord(UUID_SERVCLASS_AUDIO_SOURCE, p_service_name, NULL,
+                                  A2D_SUPF_PLAYER, bta_av_cb.sdp_a2d_handle);
+                    bta_sys_add_uuid(UUID_SERVCLASS_AUDIO_SOURCE);
+                } else {
 #if (BTA_AV_SINK_INCLUDED == TRUE)
-                bta_av_cb.sdp_a2d_snk_handle = SDP_CreateRecord();
-                A2D_AddRecord(UUID_SERVCLASS_AUDIO_SINK, p_avk_service_name, NULL,
-                              A2D_SUPF_PLAYER, bta_av_cb.sdp_a2d_snk_handle);
-                bta_sys_add_uuid(UUID_SERVCLASS_AUDIO_SINK);
+                    bta_av_cb.sdp_a2d_snk_handle = SDP_CreateRecord();
+                    A2D_AddRecord(UUID_SERVCLASS_AUDIO_SINK, p_avk_service_name, NULL,
+                                  A2D_SUPF_PLAYER, bta_av_cb.sdp_a2d_snk_handle);
+                    bta_sys_add_uuid(UUID_SERVCLASS_AUDIO_SINK);
 #endif
+                }
                 /* start listening when A2DP is registered */
                 if (bta_av_cb.features & BTA_AV_FEAT_RCTG) {
                     bta_av_rc_create(&bta_av_cb, AVCT_ACP, 0, BTA_AV_NUM_LINKS + 1);
@@ -891,7 +900,7 @@ static void bta_av_sys_rs_cback (tBTA_SYS_CONN_STATUS status, UINT8 id, UINT8 ap
         /* note that more than one SCB (a2dp & vdp) maybe waiting for this event */
         p_scb = bta_av_cb.p_scb[i];
         if (p_scb && (bdcmp (peer_addr, p_scb->peer_addr) == 0) &&
-                (p_buf = (tBTA_AV_ROLE_RES *) GKI_getbuf(sizeof(tBTA_AV_ROLE_RES))) != NULL) {
+                (p_buf = (tBTA_AV_ROLE_RES *) osi_malloc(sizeof(tBTA_AV_ROLE_RES))) != NULL) {
             APPL_TRACE_DEBUG("new_role:%d, hci_status:x%x hndl: x%x\n", id, app_id, p_scb->hndl);
             /*
             if ((id != BTM_ROLE_MASTER) && (app_id != HCI_SUCCESS))
@@ -1128,7 +1137,7 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB *p_scb, BT_HDR *p_buf)
 {
     tBTA_AV_SCB *p_scbi;
     int     i;
-    UINT16  size, copy_size;
+    UINT16  copy_size;
     BT_HDR *p_new;
 
     if (!p_buf) {
@@ -1136,7 +1145,6 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB *p_scb, BT_HDR *p_buf)
     }
 
     if (bta_av_cb.audio_open_cnt >= 2) {
-        size = GKI_get_buf_size(p_buf);
         copy_size = BT_HDR_SIZE + p_buf->len + p_buf->offset;
         /* more than one audio channel is connected */
         for (i = 0; i < BTA_AV_NUM_STRS; i++) {
@@ -1145,7 +1153,7 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB *p_scb, BT_HDR *p_buf)
                     (bta_av_cb.conn_audio & BTA_AV_HNDL_TO_MSK(i)) && /* connected audio */
                     p_scbi && p_scbi->co_started ) { /* scb is used and started */
                 /* enqueue the data only when the stream is started */
-                p_new = (BT_HDR *)GKI_getbuf(size);
+                p_new = (BT_HDR *)osi_malloc(copy_size);
                 if (p_new) {
                     memcpy(p_new, p_buf, copy_size);
                     list_append(p_scbi->a2d_list, p_new);
@@ -1154,7 +1162,7 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB *p_scb, BT_HDR *p_buf)
                         bta_av_co_audio_drop(p_scbi->hndl);
                         BT_HDR *p_buf = list_front(p_scbi->a2d_list);
                         list_remove(p_scbi->a2d_list, p_buf);
-                        GKI_freebuf(p_buf);
+                        osi_free(p_buf);
                     }
                 }
             }
@@ -1238,9 +1246,10 @@ BOOLEAN bta_av_hdl_event(BT_HDR *p_msg)
         bta_av_sm_execute(&bta_av_cb, p_msg->event, (tBTA_AV_DATA *) p_msg);
     } else {
         APPL_TRACE_VERBOSE("handle=0x%x\n", p_msg->layer_specific);
+        tBTA_AV_SCB *p_scb = bta_av_hndl_to_scb(p_msg->layer_specific);
+        p_scb->disc_rsn = p_msg->offset;
         /* stream state machine events */
-        bta_av_ssm_execute( bta_av_hndl_to_scb(p_msg->layer_specific),
-                            p_msg->event, (tBTA_AV_DATA *) p_msg);
+        bta_av_ssm_execute(p_scb, p_msg->event, (tBTA_AV_DATA *) p_msg);
     }
     return TRUE;
 }
@@ -1259,7 +1268,7 @@ BOOLEAN bta_av_hdl_event(BT_HDR *p_msg)
 ** Returns          char *
 **
 *******************************************************************************/
-static char *bta_av_st_code(UINT8 state)
+UNUSED_ATTR static char *bta_av_st_code(UINT8 state)
 {
     switch (state) {
     case BTA_AV_INIT_ST: return "INIT";

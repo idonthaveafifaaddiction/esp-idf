@@ -197,11 +197,53 @@ TEST_CASE("vfs parses paths correctly", "[vfs]")
     test_dir_opened(&inst_foobar, "/foo/bar/file");
     inst_toplevel.match_path = "/tmp/foo";
     test_opened(&inst_toplevel, "/tmp/foo");
+    inst_toplevel.match_path = "foo";
+    test_opened(&inst_toplevel, "foo");
 
     TEST_ESP_OK( esp_vfs_unregister("/foo") );
     TEST_ESP_OK( esp_vfs_unregister("/foo1") );
     TEST_ESP_OK( esp_vfs_unregister("/foo/bar") );
     TEST_ESP_OK( esp_vfs_unregister("") );
+}
+
+TEST_CASE("vfs unregisters correct nested mount point", "[vfs]")
+{
+    dummy_vfs_t inst_foobar = {
+        .match_path = "/file",
+        .called = false
+    };
+    esp_vfs_t desc_foobar = DUMMY_VFS();
+    TEST_ESP_OK( esp_vfs_register("/foo/bar", &desc_foobar, &inst_foobar) );
+
+    dummy_vfs_t inst_foo = {
+        .match_path = "/bar/file",
+        .called = false
+    };
+    esp_vfs_t desc_foo = DUMMY_VFS();
+    TEST_ESP_OK( esp_vfs_register("/foo", &desc_foo, &inst_foo) );
+
+    /* basic operation */
+    test_opened(&inst_foobar, "/foo/bar/file");
+    test_not_called(&inst_foo, "/foo/bar/file");
+
+    /* this should not match anything */
+    TEST_ESP_ERR(ESP_ERR_INVALID_STATE, esp_vfs_unregister("/foo/b"));
+
+    /* unregister "/foo" and check that we haven't unregistered "/foo/bar" */
+    TEST_ESP_OK( esp_vfs_unregister("/foo") );
+    test_not_called(&inst_foo, "/foo/bar/file");
+    test_opened(&inst_foobar, "/foo/bar/file");
+
+    /* repeat the above, with the reverse order of registration */
+    TEST_ESP_OK( esp_vfs_unregister("/foo/bar") );
+    TEST_ESP_OK( esp_vfs_register("/foo", &desc_foo, &inst_foo) );
+    TEST_ESP_OK( esp_vfs_register("/foo/bar", &desc_foobar, &inst_foobar) );
+    test_opened(&inst_foobar, "/foo/bar/file");
+    test_not_called(&inst_foo, "/foo/bar/file");
+    TEST_ESP_OK( esp_vfs_unregister("/foo") );
+    test_not_called(&inst_foo, "/foo/bar/file");
+    test_opened(&inst_foobar, "/foo/bar/file");
+    TEST_ESP_OK( esp_vfs_unregister("/foo/bar") );
 }
 
 

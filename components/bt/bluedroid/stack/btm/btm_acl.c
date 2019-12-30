@@ -36,16 +36,15 @@
 //#include <stdio.h>
 #include <stddef.h>
 
-#include "bt_types.h"
-#include "bt_target.h"
-#include "controller.h"
-#include "gki.h"
-#include "hcimsgs.h"
-#include "btu.h"
-#include "btm_api.h"
+#include "stack/bt_types.h"
+#include "common/bt_target.h"
+#include "device/controller.h"
+#include "stack/hcimsgs.h"
+#include "stack/btu.h"
+#include "stack/btm_api.h"
 #include "btm_int.h"
 #include "l2c_int.h"
-#include "hcidefs.h"
+#include "stack/hcidefs.h"
 //#include "bt_utils.h"
 
 static void btm_read_remote_features (UINT16 handle);
@@ -262,9 +261,10 @@ void btm_acl_created (BD_ADDR bda, DEV_CLASS dc, BD_NAME bdn,
 #if BLE_INCLUDED == TRUE
             p->transport = transport;
 #if BLE_PRIVACY_SPT == TRUE
-            if (transport == BT_TRANSPORT_LE)
+            if (transport == BT_TRANSPORT_LE) {
                 btm_ble_refresh_local_resolvable_private_addr(bda,
                         btm_cb.ble_ctr_cb.addr_mgnt_cb.private_addr);
+            }
 #else
             p->conn_addr_type = BLE_ADDR_PUBLIC;
             memcpy(p->conn_addr, &controller_get_interface()->get_address()->address, BD_ADDR_LEN);
@@ -336,7 +336,7 @@ void btm_acl_created (BD_ADDR bda, DEV_CLASS dc, BD_NAME bdn,
                     btsnd_hcic_ble_read_remote_feat(p->hci_handle);
                 } else if (HCI_LE_SLAVE_INIT_FEAT_EXC_SUPPORTED(controller_get_interface()->get_features_ble()->as_array)
                          && link_role == HCI_ROLE_SLAVE) {
-                    btsnd_hcic_ble_read_remote_feat(p->hci_handle);
+                    btsnd_hcic_rmt_ver_req (p->hci_handle);
                 } else {
                     btm_establish_continue(p);
                 }
@@ -907,7 +907,17 @@ void btm_read_remote_version_complete (UINT8 *p)
             }
 #if BLE_INCLUDED == TRUE
             if (p_acl_cb->transport == BT_TRANSPORT_LE) {
-                l2cble_notify_le_connection (p_acl_cb->remote_addr);
+                if(p_acl_cb->link_role == HCI_ROLE_MASTER) {
+                    if (HCI_LE_DATA_LEN_EXT_SUPPORTED(p_acl_cb->peer_le_features)) {
+                        uint16_t data_length = controller_get_interface()->get_ble_default_data_packet_length();
+                        uint16_t data_txtime = controller_get_interface()->get_ble_default_data_packet_txtime();
+                        btsnd_hcic_ble_set_data_length(p_acl_cb->hci_handle, data_length, data_txtime);
+                    }
+                    l2cble_notify_le_connection (p_acl_cb->remote_addr);
+                } else {
+                     //slave role, read remote feature
+                     btsnd_hcic_ble_read_remote_feat(p_acl_cb->hci_handle);
+                }
             }
 #endif
             break;
@@ -1513,11 +1523,10 @@ UINT8 BTM_AllocateSCN(void)
 {
     UINT8   x;
     BTM_TRACE_DEBUG ("BTM_AllocateSCN\n");
-    // stack reserves scn 1 for HFP, HSP we still do the correct way
     for (x = 1; x < BTM_MAX_SCN; x++) {
-        if (!btm_cb.btm_scn[x]) {
-            btm_cb.btm_scn[x] = TRUE;
-            return (x + 1);
+        if (!btm_cb.btm_scn[x - 1]) {
+            btm_cb.btm_scn[x - 1] = TRUE;
+            return x;
         }
     }
     return (0);    /* No free ports */
@@ -1536,10 +1545,7 @@ UINT8 BTM_AllocateSCN(void)
 #if (CLASSIC_BT_INCLUDED == TRUE)
 BOOLEAN BTM_TryAllocateSCN(UINT8 scn)
 {
-    /* Make sure we don't exceed max port range.
-     * Stack reserves scn 1 for HFP, HSP we still do the correct way.
-     */
-    if ( (scn >= BTM_MAX_SCN) || (scn == 1) ) {
+    if (scn >= BTM_MAX_SCN) {
         return FALSE;
     }
 
@@ -1896,29 +1902,20 @@ void btm_qos_setup_complete (UINT8 status, UINT16 handle, FLOW_SPEC *p_flow)
 ** Returns          BTM_CMD_STARTED if successfully initiated or error code
 **
 *******************************************************************************/
-tBTM_STATUS BTM_ReadRSSI (BD_ADDR remote_bda, tBTM_CMPL_CB *p_cb)
+tBTM_STATUS BTM_ReadRSSI (BD_ADDR remote_bda, tBT_TRANSPORT transport, tBTM_CMPL_CB *p_cb)
 {
     tACL_CONN   *p;
-    tBT_TRANSPORT transport = BT_TRANSPORT_BR_EDR;
-#if BLE_INCLUDED == TRUE
-    tBT_DEVICE_TYPE dev_type;
-    tBLE_ADDR_TYPE  addr_type;
-#endif
+
     BTM_TRACE_API ("BTM_ReadRSSI: RemBdAddr: %02x%02x%02x%02x%02x%02x\n",
                    remote_bda[0], remote_bda[1], remote_bda[2],
                    remote_bda[3], remote_bda[4], remote_bda[5]);
-
+    tBTM_RSSI_RESULTS result;
     /* If someone already waiting on the version, do not allow another */
     if (btm_cb.devcb.p_rssi_cmpl_cb) {
+        result.status = BTM_BUSY;
+        (*p_cb)(&result);
         return (BTM_BUSY);
     }
-
-#if BLE_INCLUDED == TRUE
-    BTM_ReadDevInfo(remote_bda, &dev_type, &addr_type);
-    if (dev_type == BT_DEVICE_TYPE_BLE) {
-        transport = BT_TRANSPORT_LE;
-    }
-#endif
 
     p = btm_bda_to_acl(remote_bda, transport);
     if (p != (tACL_CONN *)NULL) {
@@ -1930,6 +1927,8 @@ tBTM_STATUS BTM_ReadRSSI (BD_ADDR remote_bda, tBTM_CMPL_CB *p_cb)
         if (!btsnd_hcic_read_rssi (p->hci_handle)) {
             btm_cb.devcb.p_rssi_cmpl_cb = NULL;
             btu_stop_timer (&btm_cb.devcb.rssi_timer);
+            result.status = BTM_NO_RESOURCES;
+            (*p_cb)(&result);
             return (BTM_NO_RESOURCES);
         } else {
             return (BTM_CMD_STARTED);
@@ -2039,6 +2038,43 @@ tBTM_STATUS BTM_ReadTxPower (BD_ADDR remote_bda, tBT_TRANSPORT transport, tBTM_C
     /* If here, no BD Addr found */
     return (BTM_UNKNOWN_ADDR);
 }
+tBTM_STATUS BTM_BleReadAdvTxPower(tBTM_CMPL_CB *p_cb)
+{
+    BOOLEAN ret;
+    tBTM_TX_POWER_RESULTS result;
+    /* If someone already waiting on the version, do not allow another */
+    if (btm_cb.devcb.p_tx_power_cmpl_cb) {
+        result.status = BTM_BUSY;
+        (*p_cb)(&result);
+        return (BTM_BUSY);
+    }
+
+    btm_cb.devcb.p_tx_power_cmpl_cb = p_cb;
+    btu_start_timer (&btm_cb.devcb.tx_power_timer, BTU_TTYPE_BTM_ACL,
+                         BTM_DEV_REPLY_TIMEOUT);
+    ret = btsnd_hcic_ble_read_adv_chnl_tx_power();
+
+    if(!ret) {
+        btm_cb.devcb.p_tx_power_cmpl_cb = NULL;
+        btu_stop_timer (&btm_cb.devcb.tx_power_timer);
+        result.status = BTM_NO_RESOURCES;
+        (*p_cb)(&result);
+        return (BTM_NO_RESOURCES);
+    } else {
+        return BTM_CMD_STARTED;
+    }
+}
+
+void BTM_BleGetWhiteListSize(uint16_t *length)
+{
+    tBTM_BLE_CB *p_cb = &btm_cb.ble_ctr_cb;
+    if (p_cb->white_list_avail_size == 0) {
+        BTM_TRACE_DEBUG("%s Whitelist full.", __func__);
+    }
+    *length = p_cb->white_list_avail_size;
+    return;
+}
+
 /*******************************************************************************
 **
 ** Function         btm_read_tx_power_complete
@@ -2325,7 +2361,7 @@ void btm_acl_resubmit_page (void)
     BD_ADDR bda;
     BTM_TRACE_DEBUG ("btm_acl_resubmit_page\n");
     /* If there were other page request schedule can start the next one */
-    if ((p_buf = (BT_HDR *)GKI_dequeue (&btm_cb.page_queue)) != NULL) {
+    if ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(btm_cb.page_queue)) != NULL) {
         /* skip 3 (2 bytes opcode and 1 byte len) to get to the bd_addr
          * for both create_conn and rmt_name */
         pp = (UINT8 *)(p_buf + 1) + p_buf->offset + 3;
@@ -2356,8 +2392,8 @@ void  btm_acl_reset_paging (void)
     BT_HDR *p;
     BTM_TRACE_DEBUG ("btm_acl_reset_paging\n");
     /* If we sent reset we are definitely not paging any more */
-    while ((p = (BT_HDR *)GKI_dequeue(&btm_cb.page_queue)) != NULL) {
-        GKI_freebuf (p);
+    while ((p = (BT_HDR *)fixed_queue_try_dequeue(btm_cb.page_queue)) != NULL) {
+        osi_free (p);
     }
 
     btm_cb.paging = FALSE;
@@ -2380,7 +2416,7 @@ void  btm_acl_paging (BT_HDR *p, BD_ADDR bda)
                      (bda[0] << 16) + (bda[1] << 8) + bda[2], (bda[3] << 16) + (bda[4] << 8) + bda[5]);
     if (btm_cb.discing) {
         btm_cb.paging = TRUE;
-        GKI_enqueue (&btm_cb.page_queue, p);
+        fixed_queue_enqueue(btm_cb.page_queue, p);
     } else {
         if (!BTM_ACL_IS_CONNECTED (bda)) {
             BTM_TRACE_DEBUG ("connecting_bda: %06x%06x\n",
@@ -2390,7 +2426,7 @@ void  btm_acl_paging (BT_HDR *p, BD_ADDR bda)
                              btm_cb.connecting_bda[5]);
             if (btm_cb.paging &&
                     memcmp (bda, btm_cb.connecting_bda, BD_ADDR_LEN) != 0) {
-                GKI_enqueue (&btm_cb.page_queue, p);
+                fixed_queue_enqueue(btm_cb.page_queue, p);
             } else {
                 p_dev_rec = btm_find_or_alloc_dev (bda);
                 memcpy (btm_cb.connecting_bda, p_dev_rec->bd_addr,   BD_ADDR_LEN);
@@ -2460,15 +2496,17 @@ void btm_acl_chk_peer_pkt_type_support (tACL_CONN *p, UINT16 *p_pkt_type)
     }
 
     /* 2 and 3 MPS support? */
-    if (!HCI_EDR_ACL_2MPS_SUPPORTED(p->peer_lmp_features[HCI_EXT_FEATURES_PAGE_0]))
+    if (!HCI_EDR_ACL_2MPS_SUPPORTED(p->peer_lmp_features[HCI_EXT_FEATURES_PAGE_0])) {
         /* Not supported. Add 'not_supported' mask for all 2MPS packet types */
         *p_pkt_type |= (BTM_ACL_PKT_TYPES_MASK_NO_2_DH1 + BTM_ACL_PKT_TYPES_MASK_NO_2_DH3 +
                         BTM_ACL_PKT_TYPES_MASK_NO_2_DH5);
+    }
 
-    if (!HCI_EDR_ACL_3MPS_SUPPORTED(p->peer_lmp_features[HCI_EXT_FEATURES_PAGE_0]))
+    if (!HCI_EDR_ACL_3MPS_SUPPORTED(p->peer_lmp_features[HCI_EXT_FEATURES_PAGE_0])) {
         /* Not supported. Add 'not_supported' mask for all 3MPS packet types */
         *p_pkt_type |= (BTM_ACL_PKT_TYPES_MASK_NO_3_DH1 + BTM_ACL_PKT_TYPES_MASK_NO_3_DH3 +
                         BTM_ACL_PKT_TYPES_MASK_NO_3_DH5);
+    }
 
     /* EDR 3 and 5 slot support? */
     if (HCI_EDR_ACL_2MPS_SUPPORTED(p->peer_lmp_features[HCI_EXT_FEATURES_PAGE_0])

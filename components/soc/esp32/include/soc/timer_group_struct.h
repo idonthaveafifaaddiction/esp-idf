@@ -13,6 +13,13 @@
 // limitations under the License.
 #ifndef _SOC_TIMG_STRUCT_H_
 #define _SOC_TIMG_STRUCT_H_
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef volatile struct {
     struct{
         union {
@@ -192,4 +199,9 @@ typedef volatile struct {
 } timg_dev_t;
 extern timg_dev_t TIMERG0;
 extern timg_dev_t TIMERG1;
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif  /* _SOC_TIMG_STRUCT_H_ */

@@ -23,24 +23,24 @@
  *
  ******************************************************************************/
 
-#include "bt_target.h"
+#include "common/bt_target.h"
 #if defined(BTA_AV_INCLUDED) && (BTA_AV_INCLUDED == TRUE)
 
 #include <string.h>
-#include "bta_av_api.h"
+#include "bta/bta_av_api.h"
 #include "bta_av_int.h"
-#include "avdt_api.h"
-#include "utl.h"
-#include "l2c_api.h"
-// #include "osi/include/list.h"
-#include "list.h"
+#include "stack/avdt_api.h"
+#include "bta/utl.h"
+#include "stack/l2c_api.h"
+#include "osi/allocator.h"
+#include "osi/list.h"
 #if( defined BTA_AR_INCLUDED ) && (BTA_AR_INCLUDED == TRUE)
-#include "bta_ar_api.h"
+#include "bta/bta_ar_api.h"
 #endif
 
 #define LOG_TAG "bt_bta_av"
 // #include "osi/include/log.h"
-#include "bt_trace.h"
+#include "common/bt_trace.h"
 
 /*****************************************************************************
 **  Constants
@@ -187,7 +187,7 @@ static void bta_av_avrc_sdp_cback(UINT16 status)
     BT_HDR *p_msg;
     UNUSED(status);
 
-    if ((p_msg = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL) {
+    if ((p_msg = (BT_HDR *) osi_malloc(sizeof(BT_HDR))) != NULL) {
         p_msg->event = BTA_AV_SDP_AVRC_DISC_EVT;
         bta_sys_sendmsg(p_msg);
     }
@@ -223,7 +223,7 @@ static void bta_av_rc_ctrl_cback(UINT8 handle, UINT8 event, UINT16 result, BD_AD
     }
 
     if (msg_event) {
-        if ((p_msg = (tBTA_AV_RC_CONN_CHG *) GKI_getbuf(sizeof(tBTA_AV_RC_CONN_CHG))) != NULL) {
+        if ((p_msg = (tBTA_AV_RC_CONN_CHG *) osi_malloc(sizeof(tBTA_AV_RC_CONN_CHG))) != NULL) {
             p_msg->hdr.event = msg_event;
             p_msg->handle    = handle;
             if (peer_addr) {
@@ -261,7 +261,7 @@ static void bta_av_rc_msg_cback(UINT8 handle, UINT8 label, UINT8 opcode, tAVRC_M
 
     /* Create a copy of the message */
     tBTA_AV_RC_MSG *p_buf =
-        (tBTA_AV_RC_MSG *)GKI_getbuf((UINT16)(sizeof(tBTA_AV_RC_MSG) + data_len));
+        (tBTA_AV_RC_MSG *)osi_malloc((UINT16)(sizeof(tBTA_AV_RC_MSG) + data_len));
     if (p_buf != NULL) {
         p_buf->hdr.event = BTA_AV_AVRC_MSG_EVT;
         p_buf->handle = handle;
@@ -474,7 +474,7 @@ void bta_av_rc_opened(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
             p_scb->rc_handle = p_data->rc_conn_chg.handle;
             APPL_TRACE_DEBUG("bta_av_rc_opened shdl:%d, srch %d", i + 1, p_scb->rc_handle);
             shdl = i + 1;
-            LOG_INFO("%s allow incoming AVRCP connections:%d", __func__, p_scb->use_rc);
+            APPL_TRACE_EVENT("%s allow incoming AVRCP connections:%d", __func__, p_scb->use_rc);
             bta_sys_stop_timer(&p_scb->timer);
             disc = p_scb->hndl;
             break;
@@ -506,7 +506,7 @@ void bta_av_rc_opened(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
 
     p_cb->rcb[i].shdl = shdl;
     rc_open.rc_handle = i;
-    APPL_TRACE_ERROR("bta_av_rc_opened rcb[%d] shdl:%d lidx:%d/%d",
+    APPL_TRACE_EVENT("bta_av_rc_opened rcb[%d] shdl:%d lidx:%d/%d",
                      i, shdl, p_cb->rcb[i].lidx, p_cb->lcb[BTA_AV_NUM_LINKS].lidx);
     p_cb->rcb[i].status |= BTA_AV_RC_CONN_MASK;
 
@@ -529,6 +529,7 @@ void bta_av_rc_opened(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
 
     bdcpy(rc_open.peer_addr, p_data->rc_conn_chg.peer_addr);
     rc_open.peer_features = p_cb->rcb[i].peer_features;
+    rc_open.sdp_disc_done = TRUE;
     rc_open.status = BTA_AV_SUCCESS;
     APPL_TRACE_DEBUG("local features:x%x peer_features:x%x", p_cb->features,
                      rc_open.peer_features);
@@ -536,6 +537,7 @@ void bta_av_rc_opened(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
         /* we have not done SDP on peer RC capabilities.
          * peer must have initiated the RC connection */
         rc_open.peer_features = BTA_AV_FEAT_RCCT;
+        rc_open.sdp_disc_done = FALSE;
         bta_av_rc_disc(disc);
     }
     (*p_cb->p_cback)(BTA_AV_RC_OPEN_EVT, (tBTA_AV *) &rc_open);
@@ -636,7 +638,7 @@ void bta_av_rc_meta_rsp(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
     }
 
     if (do_free) {
-        GKI_freebuf (p_data->api_meta_rsp.p_pkt);
+        osi_free (p_data->api_meta_rsp.p_pkt);
     }
 }
 
@@ -653,7 +655,7 @@ void bta_av_rc_free_rsp (tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
 {
     UNUSED(p_cb);
 
-    GKI_freebuf (p_data->api_meta_rsp.p_pkt);
+    osi_free (p_data->api_meta_rsp.p_pkt);
 }
 
 /*******************************************************************************
@@ -827,10 +829,11 @@ void bta_av_rc_msg(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
             if (p_data->rc_msg.msg.pass.op_id == AVRC_ID_VENDOR) {
                 p_data->rc_msg.msg.hdr.ctype = BTA_AV_RSP_NOT_IMPL;
 #if (AVRC_METADATA_INCLUDED == TRUE)
-                if (p_cb->features & BTA_AV_FEAT_METADATA)
+                if (p_cb->features & BTA_AV_FEAT_METADATA) {
                     p_data->rc_msg.msg.hdr.ctype =
                         bta_av_group_navi_supported(p_data->rc_msg.msg.pass.pass_len,
                                                     p_data->rc_msg.msg.pass.p_pass_data, is_inquiry);
+                }
 #endif
             } else {
                 p_data->rc_msg.msg.hdr.ctype = bta_av_op_supported(p_data->rc_msg.msg.pass.op_id, is_inquiry);
@@ -888,7 +891,9 @@ void bta_av_rc_msg(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
                 evt = bta_av_proc_meta_cmd (&rc_rsp, &p_data->rc_msg, &ctype);
             } else
 #endif
+            {
                 evt = BTA_AV_VENDOR_CMD_EVT;
+            }
         }
         /* else if configured to support vendor specific and it's a response */
         else if ((p_cb->features & BTA_AV_FEAT_VENDOR) &&
@@ -900,7 +905,9 @@ void bta_av_rc_msg(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
                 evt = BTA_AV_META_MSG_EVT;
             } else
 #endif
+            {
                 evt = BTA_AV_VENDOR_RSP_EVT;
+            }
 
         }
         /* else if not configured to support vendor specific and it's a command */
@@ -1061,7 +1068,7 @@ void bta_av_stream_chg(tBTA_AV_SCB *p_scb, BOOLEAN started)
 **
 ** Function         bta_av_conn_chg
 **
-** Description      connetion status changed.
+** Description      connection status changed.
 **                  Open an AVRCP acceptor channel, if new conn.
 **
 ** Returns          void
@@ -1266,6 +1273,11 @@ void bta_av_disable(tBTA_AV_CB *p_cb, tBTA_AV_DATA *p_data)
         hdr.layer_specific = xx + 1;
         bta_av_api_deregister((tBTA_AV_DATA *)&hdr);
     }
+
+    bta_sys_free_timer(&p_cb->sig_tmr);
+    memset(&p_cb->sig_tmr, 0, sizeof(TIMER_LIST_ENT));
+    bta_sys_free_timer(&p_cb->acp_sig_tmr);
+    memset(&p_cb->acp_sig_tmr, 0, sizeof(TIMER_LIST_ENT));
 }
 
 /*******************************************************************************
@@ -1460,7 +1472,7 @@ static void bta_av_acp_sig_timer_cback (TIMER_LIST_ENT *p_tle)
                     p_scb->coll_mask &= ~BTA_AV_COLL_API_CALLED;
 
                     /* BTA_AV_API_OPEN_EVT */
-                    if ((p_buf = (tBTA_AV_API_OPEN *) GKI_getbuf(sizeof(tBTA_AV_API_OPEN))) != NULL) {
+                    if ((p_buf = (tBTA_AV_API_OPEN *) osi_malloc(sizeof(tBTA_AV_API_OPEN))) != NULL) {
                         memcpy(p_buf, &(p_scb->open_api), sizeof(tBTA_AV_API_OPEN));
                         bta_sys_sendmsg(p_buf);
                     }
@@ -1610,6 +1622,7 @@ void bta_av_rc_disc_done(tBTA_AV_DATA *p_data)
                 p_scb->use_rc = FALSE;
                 bdcpy(rc_open.peer_addr, p_scb->peer_addr);
                 rc_open.peer_features = 0;
+                rc_open.sdp_disc_done = FALSE;
                 rc_open.status = BTA_AV_FAIL_SDP;
                 (*p_cb->p_cback)(BTA_AV_RC_OPEN_EVT, (tBTA_AV *) &rc_open);
             }
@@ -1755,7 +1768,7 @@ void bta_av_rc_disc(UINT8 disc)
     if (p_addr) {
         /* allocate discovery database */
         if (p_cb->p_disc_db == NULL) {
-            p_cb->p_disc_db = (tSDP_DISCOVERY_DB *) GKI_getbuf(BTA_AV_DISC_BUF_SIZE);
+            p_cb->p_disc_db = (tSDP_DISCOVERY_DB *) osi_malloc(BTA_AV_DISC_BUF_SIZE);
         }
 
         if (p_cb->p_disc_db) {
@@ -1811,7 +1824,7 @@ void bta_av_dereg_comp(tBTA_AV_DATA *p_data)
                 while (!list_is_empty(p_scb->a2d_list)) {
                     p_buf = (BT_HDR *)list_front(p_scb->a2d_list);
                     list_remove(p_scb->a2d_list, p_buf);
-                    GKI_freebuf(p_buf);
+                    osi_free(p_buf);
                 }
             }
 
@@ -1839,6 +1852,8 @@ void bta_av_dereg_comp(tBTA_AV_DATA *p_data)
 
         /* make sure that the timer is not active */
         bta_sys_stop_timer(&p_scb->timer);
+        list_free(p_scb->a2d_list);
+        p_scb->a2d_list = NULL;
         utl_freebuf((void **)&p_cb->p_scb[p_scb->hdi]);
     }
 
@@ -1860,8 +1875,14 @@ void bta_av_dereg_comp(tBTA_AV_DATA *p_data)
             bta_av_cb.features  = 0;
         }
 
-        /* Clear the Capturing service class bit */
-        cod.service = BTM_COD_SERVICE_CAPTURING;
+        /* Clear the Capturing/Rendering service class bit */
+        if (p_data->api_reg.tsep == AVDT_TSEP_SRC) {
+            cod.service = BTM_COD_SERVICE_CAPTURING | BTM_COD_SERVICE_AUDIO;
+        } else {
+#if (BTA_AV_SINK_INCLUDED == TRUE)
+            cod.service = BTM_COD_SERVICE_RENDERING | BTM_COD_SERVICE_AUDIO;
+#endif
+        }
         utl_set_device_class(&cod, BTA_UTL_CLR_COD_SERVICE_CLASS);
     }
 }

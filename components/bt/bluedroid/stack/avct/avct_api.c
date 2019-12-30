@@ -23,21 +23,23 @@
  ******************************************************************************/
 
 #include <string.h>
-#include "bt_types.h"
-#include "bt_target.h"
-#include "bt_utils.h"
-#include "gki.h"
-#include "l2c_api.h"
-#include "l2cdefs.h"
-#include "btm_api.h"
-#include "avct_api.h"
+#include "stack/bt_types.h"
+#include "common/bt_target.h"
+#include "common/bt_defs.h"
+#include "stack/l2c_api.h"
+#include "stack/l2cdefs.h"
+#include "stack/btm_api.h"
+#include "stack/avct_api.h"
 #include "avct_int.h"
+#include "osi/allocator.h"
 
 #if (defined(AVCT_INCLUDED) && AVCT_INCLUDED == TRUE)
 
 /* Control block for AVCT */
 #if AVCT_DYNAMIC_MEMORY == FALSE
 tAVCT_CB avct_cb;
+#else 
+tAVCT_CB *avct_cb_ptr;
 #endif
 
 /*******************************************************************************
@@ -403,12 +405,12 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
     /* map handle to ccb */
     if ((p_ccb = avct_ccb_by_idx(handle)) == NULL) {
         result = AVCT_BAD_HANDLE;
-        GKI_freebuf(p_msg);
+        osi_free(p_msg);
     }
     /* verify channel is bound to link */
     else if (p_ccb->p_lcb == NULL) {
         result = AVCT_NOT_OPEN;
-        GKI_freebuf(p_msg);
+        osi_free(p_msg);
     }
 
     if (result == AVCT_SUCCESS) {
@@ -423,7 +425,7 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
             if (p_ccb->p_bcb == NULL && (p_ccb->allocated & AVCT_ALOC_BCB) == 0) {
                 /* BCB channel is not open and not allocated */
                 result = AVCT_BAD_HANDLE;
-                GKI_freebuf(p_msg);
+                osi_free(p_msg);
             } else {
                 p_ccb->p_bcb = avct_bcb_by_lcb(p_ccb->p_lcb);
                 avct_bcb_event(p_ccb->p_bcb, AVCT_LCB_UL_MSG_EVT, (tAVCT_LCB_EVT *) &ul_msg);

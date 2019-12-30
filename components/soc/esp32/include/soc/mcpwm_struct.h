@@ -13,6 +13,13 @@
 // limitations under the License.
 #ifndef _SOC_MCPWM_STRUCT_H__
 #define _SOC_MCPWM_STRUCT_H__
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef volatile struct {
     union {
         struct {
@@ -449,4 +456,9 @@ typedef volatile struct {
 } mcpwm_dev_t;
 extern mcpwm_dev_t MCPWM0;
 extern mcpwm_dev_t MCPWM1;
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif  /* _SOC_MCPWM_STRUCT_H__ */

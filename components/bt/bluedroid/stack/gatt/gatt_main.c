@@ -22,16 +22,15 @@
  *
  ******************************************************************************/
 
-#include "bt_target.h"
+#include "common/bt_target.h"
 
 #if BLE_INCLUDED == TRUE
 
-#include "gki.h"
 #include "gatt_int.h"
-#include "l2c_api.h"
+#include "stack/l2c_api.h"
 #include "btm_int.h"
 #include "btm_ble_int.h"
-//#include "bt_utils.h"
+#include "osi/allocator.h"
 
 /* Configuration flags. */
 #define GATT_L2C_CFG_IND_DONE   (1<<0)
@@ -48,7 +47,7 @@ static void gatt_le_connect_cback (UINT16 chan, BD_ADDR bd_addr, BOOLEAN connect
                                    UINT16 reason, tBT_TRANSPORT transport);
 static void gatt_le_data_ind (UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf);
 static void gatt_le_cong_cback(BD_ADDR remote_bda, BOOLEAN congest);
-#if (CLASSIC_BT_INCLUDED == TRUE)
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
 static void gatt_l2cif_connect_ind_cback (BD_ADDR  bd_addr, UINT16 l2cap_cid,
         UINT16 psm, UINT8 l2cap_id);
 static void gatt_l2cif_connect_cfm_cback (UINT16 l2cap_cid, UINT16 result);
@@ -57,9 +56,9 @@ static void gatt_l2cif_config_cfm_cback (UINT16 l2cap_cid, tL2CAP_CFG_INFO *p_cf
 static void gatt_l2cif_disconnect_ind_cback (UINT16 l2cap_cid, BOOLEAN ack_needed);
 static void gatt_l2cif_disconnect_cfm_cback (UINT16 l2cap_cid, UINT16 result);
 static void gatt_l2cif_data_ind_cback (UINT16 l2cap_cid, BT_HDR *p_msg);
-#endif  ///CLASSIC_BT_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
 static void gatt_send_conn_cback (tGATT_TCB *p_tcb);
-#if (CLASSIC_BT_INCLUDED == TRUE)
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
 static void gatt_l2cif_congest_cback (UINT16 cid, BOOLEAN congested);
 static const tL2CAP_APPL_INFO dyn_info = {
     gatt_l2cif_connect_ind_cback,
@@ -74,11 +73,15 @@ static const tL2CAP_APPL_INFO dyn_info = {
     gatt_l2cif_congest_cback,
     NULL
 } ;
-#endif  ///SMP_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
 
 #if GATT_DYNAMIC_MEMORY == FALSE
 tGATT_CB  gatt_cb;
+#else
+tGATT_CB  *gatt_cb_ptr;
 #endif
+
+tGATT_DEFAULT gatt_default;
 
 /*******************************************************************************
 **
@@ -93,9 +96,9 @@ tGATT_CB  gatt_cb;
 void gatt_init (void)
 {
     tL2CAP_FIXED_CHNL_REG  fixed_reg;
-
-    GATT_TRACE_DEBUG("gatt_init()");
-
+#if GATT_DYNAMIC_MEMORY
+    gatt_cb_ptr = (tGATT_CB *)osi_malloc(sizeof(tGATT_CB));
+#endif /* #if GATT_DYNAMIC_MEMORY */
     memset (&gatt_cb, 0, sizeof(tGATT_CB));
     memset (&fixed_reg, 0, sizeof(tL2CAP_FIXED_CHNL_REG));
 
@@ -105,9 +108,9 @@ void gatt_init (void)
     gatt_cb.trace_level = BT_TRACE_LEVEL_NONE;    /* No traces */
 #endif
     gatt_cb.def_mtu_size = GATT_DEF_BLE_MTU_SIZE;
-    GKI_init_q (&gatt_cb.sign_op_queue);
-    GKI_init_q (&gatt_cb.srv_chg_clt_q);
-    GKI_init_q (&gatt_cb.pending_new_srv_start_q);
+    gatt_cb.sign_op_queue = fixed_queue_new(QUEUE_SIZE_MAX);
+    gatt_cb.srv_chg_clt_q = fixed_queue_new(QUEUE_SIZE_MAX);
+    gatt_cb.pending_new_srv_start_q = fixed_queue_new(QUEUE_SIZE_MAX);
     /* First, register fixed L2CAP channel for ATT over BLE */
     fixed_reg.fixed_chnl_opts.mode         = L2CAP_FCR_BASIC_MODE;
     fixed_reg.fixed_chnl_opts.max_transmit = 0xFF;
@@ -122,12 +125,13 @@ void gatt_init (void)
     fixed_reg.default_idle_tout  = 0xffff;                  /* 0xffff default idle timeout */
 
     L2CA_RegisterFixedChannel (L2CAP_ATT_CID, &fixed_reg);
-#if (CLASSIC_BT_INCLUDED == TRUE)
+
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
     /* Now, register with L2CAP for ATT PSM over BR/EDR */
     if (!L2CA_Register (BT_PSM_ATT, (tL2CAP_APPL_INFO *) &dyn_info)) {
         GATT_TRACE_ERROR ("ATT Dynamic Registration failed");
     }
-#endif  ///CLASSIC_BT_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
     BTM_SetSecurityLevel(TRUE, "", BTM_SEC_SERVICE_ATT, BTM_SEC_NONE, BT_PSM_ATT, 0, 0);
     BTM_SetSecurityLevel(FALSE, "", BTM_SEC_SERVICE_ATT, BTM_SEC_NONE, BT_PSM_ATT, 0, 0);
 
@@ -137,7 +141,8 @@ void gatt_init (void)
 #if (GATTS_INCLUDED == TRUE)
     gatt_profile_db_init();
 #endif  ///GATTS_INCLUDED == TRUE
-
+    //init local MTU size
+    gatt_default.local_mtu = GATT_MAX_MTU_SIZE;
 }
 
 
@@ -150,14 +155,48 @@ void gatt_init (void)
 ** Returns          void
 **
 *******************************************************************************/
-#if (GATTS_INCLUDED == TRUE)
+#if (GATT_INCLUDED == TRUE)
 void gatt_free(void)
 {
     int i;
     GATT_TRACE_DEBUG("gatt_free()");
+    fixed_queue_free(gatt_cb.sign_op_queue, NULL);
+    gatt_cb.sign_op_queue = NULL;
+    fixed_queue_free(gatt_cb.srv_chg_clt_q, NULL);
+    gatt_cb.srv_chg_clt_q = NULL;
+    fixed_queue_free(gatt_cb.pending_new_srv_start_q, NULL);
+    gatt_cb.pending_new_srv_start_q = NULL;
+
+    for (i = 0; i < GATT_MAX_PHY_CHANNEL; i++)
+    {
+        fixed_queue_free(gatt_cb.tcb[i].pending_enc_clcb, NULL);
+        gatt_cb.tcb[i].pending_enc_clcb = NULL;
+
+        fixed_queue_free(gatt_cb.tcb[i].pending_ind_q, NULL);
+        gatt_cb.tcb[i].pending_ind_q = NULL;
+
+        btu_free_timer(&gatt_cb.tcb[i].conf_timer_ent);
+        memset(&gatt_cb.tcb[i].conf_timer_ent, 0, sizeof(TIMER_LIST_ENT));
+
+        btu_free_timer(&gatt_cb.tcb[i].ind_ack_timer_ent);
+        memset(&gatt_cb.tcb[i].ind_ack_timer_ent, 0, sizeof(TIMER_LIST_ENT));
+
+#if (GATTS_INCLUDED == TRUE)
+        fixed_queue_free(gatt_cb.tcb[i].sr_cmd.multi_rsp_q, NULL);
+        gatt_cb.tcb[i].sr_cmd.multi_rsp_q = NULL;
+#endif /* #if (GATTS_INCLUDED == TRUE) */
+    }
+
+#if (GATTS_INCLUDED == TRUE)
     for (i = 0; i < GATT_MAX_SR_PROFILES; i++) {
+        gatt_remove_an_item_from_list(&gatt_cb.hdl_list_info, &gatt_cb.hdl_list[i]);
+        gatt_free_attr_value_buffer(&gatt_cb.hdl_list[i]);
         gatt_free_hdl_buffer(&gatt_cb.hdl_list[i]);
     }
+#endif /* #if (GATTS_INCLUDED == TRUE) */
+#if GATT_DYNAMIC_MEMORY
+    FREE_AND_RESET(gatt_cb_ptr);
+#endif /* #if GATT_DYNAMIC_MEMORY */
 }
 #endif  ///GATTS_INCLUDED == TRUE
 
@@ -168,11 +207,11 @@ void gatt_free(void)
 ** Description      This function is called to initiate a connection to a peer device.
 **
 ** Parameter        rem_bda: remote device address to connect to.
-**
+**                  bd_addr_type: emote device address type.
 ** Returns          TRUE if connection is started, otherwise return FALSE.
 **
 *******************************************************************************/
-BOOLEAN gatt_connect (BD_ADDR rem_bda, tGATT_TCB *p_tcb, tBT_TRANSPORT transport)
+BOOLEAN gatt_connect (BD_ADDR rem_bda, tBLE_ADDR_TYPE bd_addr_type, tGATT_TCB *p_tcb, tBT_TRANSPORT transport)
 {
     BOOLEAN             gatt_ret = FALSE;
 
@@ -182,13 +221,13 @@ BOOLEAN gatt_connect (BD_ADDR rem_bda, tGATT_TCB *p_tcb, tBT_TRANSPORT transport
 
     if (transport == BT_TRANSPORT_LE) {
         p_tcb->att_lcid = L2CAP_ATT_CID;
-        gatt_ret = L2CA_ConnectFixedChnl (L2CAP_ATT_CID, rem_bda);
-#if (CLASSIC_BT_INCLUDED == TRUE)
+        gatt_ret = L2CA_ConnectFixedChnl (L2CAP_ATT_CID, rem_bda, bd_addr_type);
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
     } else {
         if ((p_tcb->att_lcid = L2CA_ConnectReq(BT_PSM_ATT, rem_bda)) != 0) {
             gatt_ret = TRUE;
         }
-#endif  ///CLASSIC_BT_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
 
     }
 
@@ -224,10 +263,10 @@ BOOLEAN gatt_disconnect (tGATT_TCB *p_tcb)
                     gatt_set_ch_state(p_tcb, GATT_CH_CLOSING);
                     ret = L2CA_CancelBleConnectReq (p_tcb->peer_bda);
                 }
-#if (CLASSIC_BT_INCLUDED == TRUE)
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
             } else {
                 ret = L2CA_DisconnectReq(p_tcb->att_lcid);
-#endif  ///CLASSIC_BT_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
             }
         } else {
             GATT_TRACE_DEBUG ("gatt_disconnect already in closing state");
@@ -327,7 +366,7 @@ void gatt_update_app_use_link_flag (tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN 
 ** Returns          void.
 **
 *******************************************************************************/
-BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr, tBT_TRANSPORT transport)
+BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr, tBLE_ADDR_TYPE bd_addr_type, tBT_TRANSPORT transport)
 {
     BOOLEAN     ret = FALSE;
     tGATT_TCB   *p_tcb;
@@ -340,7 +379,7 @@ BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr, tBT_TRANSPORT trans
         /* before link down, another app try to open a GATT connection */
         if (st == GATT_CH_OPEN &&  gatt_num_apps_hold_link(p_tcb) == 0 &&
                 transport == BT_TRANSPORT_LE ) {
-            if (!gatt_connect(bd_addr,  p_tcb, transport)) {
+            if (!gatt_connect(bd_addr, bd_addr_type, p_tcb, transport)) {
                 ret = FALSE;
             }
         } else if (st == GATT_CH_CLOSING) {
@@ -349,8 +388,10 @@ BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr, tBT_TRANSPORT trans
         }
     } else {
         if ((p_tcb = gatt_allocate_tcb_by_bdaddr(bd_addr, transport)) != NULL) {
-            if (!gatt_connect(bd_addr,  p_tcb, transport)) {
+            if (!gatt_connect(bd_addr, bd_addr_type, p_tcb, transport)) {
                 GATT_TRACE_ERROR("gatt_connect failed");
+                fixed_queue_free(p_tcb->pending_enc_clcb, NULL);
+                fixed_queue_free(p_tcb->pending_ind_q, NULL);
                 memset(p_tcb, 0, sizeof(tGATT_TCB));
             } else {
                 ret = TRUE;
@@ -521,7 +562,7 @@ static void gatt_le_data_ind (UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf)
             gatt_get_ch_state(p_tcb) >= GATT_CH_OPEN) {
         gatt_data_process(p_tcb, p_buf);
     } else {
-        GKI_freebuf (p_buf);
+        osi_free (p_buf);
 
         if (p_tcb != NULL) {
             GATT_TRACE_WARNING ("ATT - Ignored L2CAP data while in state: %d\n",
@@ -541,7 +582,7 @@ static void gatt_le_data_ind (UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf)
 ** Returns          void
 **
 *******************************************************************************/
-#if (CLASSIC_BT_INCLUDED == TRUE)
+#if (CLASSIC_BT_GATT_INCLUDED == TRUE)
 static void gatt_l2cif_connect_ind_cback (BD_ADDR  bd_addr, UINT16 lcid, UINT16 psm, UINT8 id)
 {
     /* do we already have a control channel for this peer? */
@@ -576,7 +617,7 @@ static void gatt_l2cif_connect_ind_cback (BD_ADDR  bd_addr, UINT16 lcid, UINT16 
         /* Send L2CAP config req */
         memset(&cfg, 0, sizeof(tL2CAP_CFG_INFO));
         cfg.mtu_present = TRUE;
-        cfg.mtu = GATT_MAX_MTU_SIZE;
+        cfg.mtu = gatt_default.local_mtu;
 
         L2CA_ConfigReq(lcid, &cfg);
     }
@@ -612,7 +653,7 @@ static void gatt_l2cif_connect_cfm_cback(UINT16 lcid, UINT16 result)
                 /* Send L2CAP config req */
                 memset(&cfg, 0, sizeof(tL2CAP_CFG_INFO));
                 cfg.mtu_present = TRUE;
-                cfg.mtu = GATT_MAX_MTU_SIZE;
+                cfg.mtu = gatt_default.local_mtu;
                 L2CA_ConfigReq(lcid, &cfg);
             }
             /* else initiating connection failure */
@@ -824,7 +865,7 @@ static void gatt_l2cif_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
         /* process the data */
         gatt_data_process(p_tcb, p_buf);
     } else { /* prevent buffer leak */
-        GKI_freebuf(p_buf);
+        osi_free(p_buf);
     }
 
 }
@@ -847,7 +888,7 @@ static void gatt_l2cif_congest_cback (UINT16 lcid, BOOLEAN congested)
     }
 
 }
-#endif  ///CLASSIC_BT_INCLUDED == TRUE
+#endif  ///CLASSIC_BT_GATT_INCLUDED == TRUE
 
 /*******************************************************************************
 **
@@ -941,13 +982,18 @@ void gatt_data_process (tGATT_TCB *p_tcb, BT_HDR *p_buf)
                 }
             }
         } else {
-            GATT_TRACE_ERROR ("ATT - Rcvd L2CAP data, unknown cmd: 0x%x\n", op_code);
+            if (op_code & GATT_COMMAND_FLAG) {
+                GATT_TRACE_ERROR ("ATT - Rcvd L2CAP data, unknown cmd: 0x%x\n", op_code);
+            } else {
+                GATT_TRACE_ERROR ("ATT - Rcvd L2CAP data, unknown req: 0x%x\n", op_code);
+                gatt_send_error_rsp (p_tcb, GATT_REQ_NOT_SUPPORTED, op_code, 0, FALSE);
+            }
         }
     } else {
         GATT_TRACE_ERROR ("invalid data length, ignore\n");
     }
 
-    GKI_freebuf (p_buf);
+    osi_free (p_buf);
 }
 
 /*******************************************************************************
@@ -979,35 +1025,36 @@ void gatt_add_a_bonded_dev_for_srv_chg (BD_ADDR bda)
 **
 ** Function         gatt_send_srv_chg_ind
 **
-** Description      This function is called to send a service chnaged indication to
+** Description      This function is called to send a service changed indication to
 **                  the specified bd address
 **
-** Returns          void
+** Returns          GATT_SUCCESS if sucessfully sent; otherwise error code
 **
 *******************************************************************************/
 #if (GATTS_INCLUDED == TRUE)
-void gatt_send_srv_chg_ind (BD_ADDR peer_bda)
+tGATT_STATUS gatt_send_srv_chg_ind (BD_ADDR peer_bda)
 {
     UINT8   handle_range[GATT_SIZE_OF_SRV_CHG_HNDL_RANGE];
     UINT8   *p = handle_range;
     UINT16  conn_id;
-
+    tGATT_STATUS  status = GATT_ERROR;
     GATT_TRACE_DEBUG("gatt_send_srv_chg_ind");
 
     if (gatt_cb.handle_of_h_r) {
         if ((conn_id = gatt_profile_find_conn_id_by_bd_addr(peer_bda)) != GATT_INVALID_CONN_ID) {
             UINT16_TO_STREAM (p, 1);
             UINT16_TO_STREAM (p, 0xFFFF);
-            GATTS_HandleValueIndication (conn_id,
+            status = GATTS_HandleValueIndication (conn_id,
                                          gatt_cb.handle_of_h_r,
                                          GATT_SIZE_OF_SRV_CHG_HNDL_RANGE,
                                          handle_range);
         } else {
-            GATT_TRACE_ERROR("Unable to find conn_id for  %08x%04x ",
-                             (peer_bda[0] << 24) + (peer_bda[1] << 16) + (peer_bda[2] << 8) + peer_bda[3],
-                             (peer_bda[4] << 8) + peer_bda[5] );
+            status = GATT_NOT_FOUND;
+            GATT_TRACE_ERROR("Unable to find conn_id for  %02x%02x%02x%02x%02x%02x ",
+                             peer_bda[0], peer_bda[1],  peer_bda[2], peer_bda[3], peer_bda[4], peer_bda[5]);
         }
     }
+    return status;
 }
 
 
@@ -1015,7 +1062,7 @@ void gatt_send_srv_chg_ind (BD_ADDR peer_bda)
 **
 ** Function         gatt_chk_srv_chg
 **
-** Description      Check sending service chnaged Indication is required or not
+** Description      Check sending service changed Indication is required or not
 **                  if required then send the Indication
 **
 ** Returns          void
@@ -1099,7 +1146,7 @@ void gatt_proc_srv_chg (void)
         gatt_set_srv_chg();
         start_idx = 0;
         while (gatt_find_the_connected_bda(start_idx, bda, &found_idx, &transport)) {
-            p_tcb = &gatt_cb.tcb[found_idx];;
+            p_tcb = &gatt_cb.tcb[found_idx];
             srv_chg_ind_pending  = gatt_is_srv_chg_ind_pending(p_tcb);
 
             if (!srv_chg_ind_pending) {
@@ -1147,6 +1194,16 @@ tGATT_CH_STATE gatt_get_ch_state(tGATT_TCB *p_tcb)
         ch_state = p_tcb->ch_state;
     }
     return ch_state;
+}
+
+uint16_t gatt_get_local_mtu(void)
+{
+    return gatt_default.local_mtu;
+}
+
+void gatt_set_local_mtu(uint16_t mtu)
+{
+    gatt_default.local_mtu = mtu;
 }
 
 #endif /* BLE_INCLUDED */

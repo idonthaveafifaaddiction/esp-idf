@@ -23,13 +23,14 @@
  ******************************************************************************/
 
 #include <string.h>
-#include "bt_types.h"
-#include "bt_target.h"
-#include "bt_utils.h"
-#include "avct_api.h"
+#include "stack/bt_types.h"
+#include "common/bt_target.h"
+#include "common/bt_defs.h"
+#include "stack/avct_api.h"
 #include "avct_int.h"
-#include "l2c_api.h"
-#include "l2cdefs.h"
+#include "stack/l2c_api.h"
+#include "stack/l2cdefs.h"
+#include "osi/allocator.h"
 
 #if (defined(AVCT_INCLUDED) && AVCT_INCLUDED == TRUE)
 
@@ -398,7 +399,7 @@ void avct_l2c_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
         avct_lcb_event(p_lcb, AVCT_LCB_LL_MSG_EVT, (tAVCT_LCB_EVT *) &p_buf);
     } else { /* prevent buffer leak */
         AVCT_TRACE_WARNING("ERROR -> avct_l2c_data_ind_cback drop buffer");
-        GKI_freebuf(p_buf);
+        osi_free(p_buf);
     }
 }
 

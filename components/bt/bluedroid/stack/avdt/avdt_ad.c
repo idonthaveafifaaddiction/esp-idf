@@ -23,17 +23,18 @@
  ******************************************************************************/
 
 // #include <assert.h>
-#include "bt_trace.h"
+#include "common/bt_trace.h"
 #include <string.h>
 
-#include "bt_types.h"
-#include "bt_target.h"
-#include "bt_utils.h"
-#include "avdt_api.h"
-#include "avdtc_api.h"
+#include "stack/bt_types.h"
+#include "common/bt_target.h"
+#include "common/bt_defs.h"
+#include "stack/avdt_api.h"
+#include "stack/avdtc_api.h"
 #include "avdt_int.h"
-#include "l2c_api.h"
-#include "l2cdefs.h"
+#include "stack/l2c_api.h"
+#include "stack/l2cdefs.h"
+#include "osi/allocator.h"
 
 #if (defined(AVDT_INCLUDED) && AVDT_INCLUDED == TRUE)
 /*******************************************************************************
@@ -449,7 +450,7 @@ void avdt_ad_tc_data_ind(tAVDT_TC_TBL *p_tbl, BT_HDR *p_buf)
         if (p_scb != NULL) {
             avdt_scb_event(p_scb, AVDT_SCB_TC_DATA_EVT, (tAVDT_SCB_EVT *) &p_buf);
         } else {
-            GKI_freebuf(p_buf);
+            osi_free(p_buf);
             AVDT_TRACE_ERROR(" avdt_ad_tc_data_ind buffer freed");
         }
     }

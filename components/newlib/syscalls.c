@@ -21,42 +21,43 @@
 #include <stdlib.h>
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_heap_caps.h"
+
+
+/*
+ These contain the business logic for the malloc() and realloc() implementation. Because of heap tracing
+ wrapping reasons, we do not want these to be a public api, however, so they're not defined publicly.
+*/
+extern void *heap_caps_malloc_default( size_t size );
+extern void *heap_caps_realloc_default( void *ptr, size_t size );
+
 
 void* IRAM_ATTR _malloc_r(struct _reent *r, size_t size)
 {
-    return pvPortMalloc(size);
+    return heap_caps_malloc_default( size );
 }
 
 void IRAM_ATTR _free_r(struct _reent *r, void* ptr)
 {
-    vPortFree(ptr);
+    heap_caps_free( ptr );
 }
 
 void* IRAM_ATTR _realloc_r(struct _reent *r, void* ptr, size_t size)
 {
-    void* new_chunk;
-    if (size == 0) {
-        if (ptr) {
-            vPortFree(ptr);
-        }
+    return heap_caps_realloc_default( ptr, size );
+}
+
+void* IRAM_ATTR _calloc_r(struct _reent *r, size_t nmemb, size_t size)
+{
+    void *result;
+    size_t size_bytes;
+    if (__builtin_mul_overflow(nmemb, size, &size_bytes)) {
         return NULL;
     }
 
-    new_chunk = pvPortMalloc(size);
-    if (new_chunk && ptr) {
-        memcpy(new_chunk, ptr, size);
-        vPortFree(ptr);
-    }
-    // realloc behaviour: don't free original chunk if alloc failed
-    return new_chunk;
-}
-
-void* IRAM_ATTR _calloc_r(struct _reent *r, size_t count, size_t size)
-{
-    void* result = pvPortMalloc(count * size);
-    if (result)
-    {
-        memset(result, 0, count * size);
+    result = malloc(size_bytes);
+    if (result != NULL) {
+        bzero(result, size_bytes);
     }
     return result;
 }
@@ -67,7 +68,7 @@ int _system_r(struct _reent *r, const char *str)
     return -1;
 }
 
-void _raise_r(struct _reent *r)
+int _raise_r(struct _reent *r, int sig)
 {
     abort();
 }

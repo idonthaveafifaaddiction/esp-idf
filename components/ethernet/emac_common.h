@@ -15,15 +15,12 @@
 #ifndef _EMAC_COMMON_H_
 #define _EMAC_COMMON_H_
 
-#include <stdint.h>
-
-#include "esp_err.h"
-#include "emac_dev.h"
-#include "esp_eth.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include "esp_eth.h"
+#include "emac_dev.h"
 
 typedef uint32_t emac_sig_t;
 typedef uint32_t emac_par_t;
@@ -53,6 +50,7 @@ enum {
 struct emac_config_data {
     eth_phy_base_t phy_addr;
     eth_mode_t mac_mode;
+    eth_clock_mode_t clock_mode;
     struct dma_extended_desc *dma_etx;
     uint32_t cur_tx;
     uint32_t dirty_tx;
@@ -74,8 +72,10 @@ struct emac_config_data {
     eth_phy_get_duplex_mode_func emac_phy_get_duplex_mode;
     bool emac_flow_ctrl_enable;
     bool emac_flow_ctrl_partner_support;
-    eth_phy_get_partner_pause_enable_func  emac_phy_get_partner_pause_enable;
-    eth_phy_power_enable_func  emac_phy_power_enable;
+    eth_phy_get_partner_pause_enable_func emac_phy_get_partner_pause_enable;
+    eth_phy_power_enable_func emac_phy_power_enable;
+    uint32_t reset_timeout_ms;
+    bool promiscuous_enable;
 };
 
 enum emac_post_type {
@@ -101,24 +101,19 @@ struct emac_open_cmd {
 struct emac_close_cmd {
     int8_t err;
 };
-#if CONFIG_ETHERNET
+
 #define DMA_RX_BUF_NUM CONFIG_DMA_RX_BUF_NUM
 #define DMA_TX_BUF_NUM CONFIG_DMA_TX_BUF_NUM
 #define EMAC_TASK_PRIORITY CONFIG_EMAC_TASK_PRIORITY
-#else
-#define DMA_RX_BUF_NUM 1
-#define DMA_TX_BUF_NUM 1
-#define EMAC_TASK_PRIORITY 10
-#endif
+#define EMAC_TASK_STACK_SIZE CONFIG_EMAC_TASK_STACK_SIZE
+
 #define DMA_RX_BUF_SIZE 1600
 #define DMA_TX_BUF_SIZE 1600
 
-//rest buf num
 #define FLOW_CONTROL_HIGH_WATERMARK 3
-//used buf num
-#define FLOW_CONTROL_LOW_WATERMARK  6
+#define FLOW_CONTROL_LOW_WATERMARK 6
 
-#define PHY_LINK_CHECK_NUM  5
+#define PHY_LINK_CHECK_NUM 5
 
 #define EMAC_CMD_OK 0
 #define EMAC_CMD_FAIL -1

@@ -23,8 +23,8 @@
  *
  ******************************************************************************/
 
-#include "bt_target.h"
-#include "bta_hh_api.h"
+#include "common/bt_target.h"
+#include "bta/bta_hh_api.h"
 
 #if defined(BTA_HH_INCLUDED) && (BTA_HH_INCLUDED == TRUE)
 
@@ -34,7 +34,7 @@
 
 /* size of database for service discovery */
 #ifndef BTA_HH_DISC_BUF_SIZE
-#define BTA_HH_DISC_BUF_SIZE        GKI_MAX_BUF_SIZE
+#define BTA_HH_DISC_BUF_SIZE        BT_DEFAULT_BUFFER_SIZE
 #endif
 
 
